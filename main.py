@@ -21,6 +21,9 @@ limits_ws = sheet.worksheet("Лимиты")
 
 user_state = {}
 
+# Разрешённые user_id
+ALLOWED_USERS = [157773521, 5604537810]  # Замените на свои user_id
+
 def get_russian_month():
     month_name = datetime.today().strftime("%B")
     months_ru = {
@@ -33,6 +36,11 @@ def get_russian_month():
 
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
+    # Проверка на разрешённых пользователей
+    if message.from_user.id not in ALLOWED_USERS:
+        await message.answer("У вас нет доступа к этому боту.")
+        return
+
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(
         KeyboardButton("➕ Расход"),
@@ -69,7 +77,6 @@ async def handle_limits_summary(message: types.Message):
     transactions = transactions_ws.get_all_records()
 
     response_lines = ["📊 Остатки по лимитам:"]
-
     for limit in limits:
         if limit.get("Месяц") != month:
             continue
@@ -149,51 +156,45 @@ async def handle_amount(message: types.Message):
         await message.answer("Пожалуйста, введите сумму числом.")
         return
 
-    state = user_state.pop(message.from_user.id)
-    operation_type = state["type"]
-    category = state["category"]
+    data = user_state.pop(message.from_user.id)
     user = message.from_user.first_name
     today = datetime.today().strftime("%Y-%m-%d")
     month = datetime.today().strftime("%Y-%m")
 
-    transactions_ws.append_row([today, operation_type, category, amount, user])
+    transactions_ws.append_row([today, data["type"], data["category"], amount, user])
 
     limits = limits_ws.get_all_records()
     current_limit = next(
-        (l for l in limits if l["Категория"] == category and l["Месяц"] == month),
+        (l for l in limits if l["Категория"] == data["category"] and l["Месяц"] == month),
         None
     )
 
-    if operation_type == "Расход" and current_limit:
+    if data["type"] == "Расход" and current_limit:
         rows = transactions_ws.get_all_records()
         spent = sum(
             float(r["Сумма"])
             for r in rows
-            if r["Тип"] == "Расход" and r["Категория"] == category and r["Дата"].startswith(month)
+            if r["Тип"] == "Расход" and r["Категория"] == data["category"] and r["Дата"].startswith(month)
         )
         remaining = current_limit["Лимит (₸)"] - spent
 
         month_name_ru = get_russian_month()
         await message.answer(
             f"📅 {month_name_ru}:\n"
-            f"Вы потратили на категорию \"{category}\" — {spent:.0f} ₸\n"
+            f"Вы потратили на категорию \"{data['category']}\" — {spent:.0f} ₸\n"
             f"Осталось — {remaining:.0f} ₸ из {current_limit['Лимит (₸)']} ₸"
         )
     else:
         await message.answer("✅ Записано!")
 
+    limits = limits_ws.get_all_records()
+    categories = sorted(list(set(l["Категория"] for l in limits)))
+
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-
-    if operation_type == "Доход":
-        categories = ["Зарплата", "Долг", "Подарок", "Родительские"]
-    else:
-        limits = limits_ws.get_all_records()
-        categories = sorted(list(set(l["Категория"] for l in limits)))
-
     for cat in categories:
         markup.add(KeyboardButton(cat))
     markup.add(KeyboardButton("🚪 Выход"))
-    user_state[message.from_user.id] = {"type": operation_type}
+    user_state[message.from_user.id] = {"type": data["type"]}
 
     await message.answer("Выберите следующую категорию или нажмите 🚪 Выход:", reply_markup=markup)
 
